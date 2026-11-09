@@ -87,6 +87,10 @@ pub(crate) struct ThemeEditor {
 	pub package: Box<Package>,
 	pub image: Option<Arc<egui::ColorImage>>,
 	pub cover: Option<Arc<egui::ColorImage>>,
+	/// Validated copy of `package.font` for previews.
+	pub font: Option<Arc<crate::fonts::CustomFont>>,
+	/// What a CSS import carried over and what it could not.
+	pub notice: Option<String>,
 	pub dirty: bool,
 	pub preview: bool,
 	/// Which palette the editor changes; both are saved and applied per appearance.
@@ -150,9 +154,12 @@ impl ThemeEditor {
 				wasm: vec![],
 				background_image: vec![],
 				cover_image: vec![],
+				font: vec![],
 			}),
 			image: None,
 			cover: None,
+			font: None,
+			notice: None,
 			dirty: false,
 			preview: false,
 			dark: true,
@@ -176,27 +183,47 @@ impl ThemeEditor {
 		package: Box<Package>,
 		image: Option<Arc<egui::ColorImage>>,
 		cover: Option<Arc<egui::ColorImage>>,
+		font: Option<Arc<crate::fonts::CustomFont>>,
 	) -> Self {
 		Self {
 			package,
 			image,
 			cover,
+			font,
 			..Self::new()
 		}
+	}
+	/// A new unsaved draft converted from another client's theme.
+	pub fn imported(
+		package: Box<Package>,
+		font: Option<Arc<crate::fonts::CustomFont>>,
+		notice: String,
+	) -> Self {
+		let mut editor = Self::edit(package, None, None, font);
+		editor.package.manifest.id = identity();
+		editor.notice = Some(notice);
+		editor.dirty = true;
+		editor
 	}
 	pub fn duplicate(
 		mut package: Box<Package>,
 		image: Option<Arc<egui::ColorImage>>,
 		cover: Option<Arc<egui::ColorImage>>,
+		font: Option<Arc<crate::fonts::CustomFont>>,
 	) -> Self {
 		package.manifest.id = identity();
 		package.manifest.name = format!(
 			"{} copy",
 			package.manifest.name.chars().take(30).collect::<String>()
 		);
-		let mut editor = Self::edit(package, image, cover);
+		let mut editor = Self::edit(package, image, cover, font);
 		editor.dirty = true;
 		editor
+	}
+	pub fn receive_font(&mut self, bytes: Vec<u8>, font: Arc<crate::fonts::CustomFont>) {
+		self.package.font = bytes;
+		self.font = Some(font);
+		self.dirty = true;
 	}
 	pub fn receive_cover(&mut self, bytes: Vec<u8>, image: Arc<egui::ColorImage>) {
 		self.package.cover_image = bytes;
@@ -222,6 +249,7 @@ impl ThemeEditor {
 		ExtensionRequest::PreviewTheme {
 			theme: self.package.theme.clone().map(Box::new),
 			image: self.image.clone(),
+			font: self.font.clone(),
 		}
 	}
 	pub fn tab_key(&self) -> u8 {
@@ -470,6 +498,10 @@ impl ThemeEditor {
 			}
 			match self.tab {
 				EditorTab::Basics => {
+					if let Some(notice) = &self.notice {
+						design::notice(ui, design::Level::Info, notice);
+						ui.add_space(12.0);
+					}
 					design::section(
 						ui,
 						&crate::i18n::translate("theme-editor-show-theme-details"),
@@ -520,6 +552,15 @@ impl ThemeEditor {
 						)),
 					);
 					self.cover_card(ui, requests, &mut changed);
+					ui.add_space(20.0);
+					design::section(
+						ui,
+						&crate::i18n::translate("theme-editor-show-interface-font"),
+						Some(&crate::i18n::translate(
+							"theme-editor-show-interface-font-description",
+						)),
+					);
+					self.font_card(ui, requests, &mut changed);
 				}
 				EditorTab::Background => {
 					design::section(
@@ -1020,6 +1061,48 @@ impl ThemeEditor {
 		false
 	}
 
+	fn font_card(
+		&mut self,
+		ui: &mut egui::Ui,
+		requests: &mut Vec<ExtensionRequest>,
+		changed: &mut bool,
+	) {
+		design::card(ui, |ui| {
+			let name = self.font.as_ref().map_or_else(
+				|| crate::i18n::translate("theme-editor-font-card-app-font"),
+				|font| font.name.clone(),
+			);
+			ui.label(design::medium(ui, name, 14.0));
+			ui.horizontal_wrapped(|ui| {
+				if dialog::action(
+					ui,
+					if self.font.is_some() {
+						"theme-editor-font-card-replace-font"
+					} else {
+						"theme-editor-font-card-choose-font"
+					},
+					dialog::Action::Outline,
+				)
+				.clicked()
+				{
+					requests.push(ExtensionRequest::PickThemeFont);
+				}
+				if self.font.is_some()
+					&& dialog::action(
+						ui,
+						"theme-editor-cover-card-remove",
+						dialog::Action::Neutral,
+					)
+					.clicked()
+				{
+					self.package.font.clear();
+					self.font = None;
+					*changed = true;
+				}
+			});
+		});
+		design::hint(ui, &crate::i18n::translate("theme-editor-font-card-hint"));
+	}
 	fn cover_card(
 		&mut self,
 		ui: &mut egui::Ui,

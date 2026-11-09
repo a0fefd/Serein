@@ -21,6 +21,7 @@ fn plugin(wasm: &str) -> Package {
 		theme: None,
 		background_image: Vec::new(),
 		cover_image: Vec::new(),
+		font: Vec::new(),
 		wasm: wat::parse_str(wasm).unwrap(),
 	}
 }

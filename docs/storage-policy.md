@@ -419,6 +419,16 @@ image copies. The active background and one draft background can each retain
 16,000,000 RGBA bytes; at most eight cover thumbnails and eight visible-card
 textures can each retain 7,372,800 RGBA bytes before GPU allocations. Image
 resources are released when replaced, removed or reset.
+
+A theme may also embed one TTF/OTF interface font of at most 8 MiB inside the same
+16 MiB package; no font path is persisted. The worker validates its outlines before
+use and decodes it only for the selected theme and an explicit editor draft, so at most
+two theme font copies are retained in RAM besides the owner's saved custom font. The
+theme font is shared by reference between the installed list, preview and renderer, and
+is released when its theme is deactivated, replaced or removed. The owner's own font
+choice and its SQLite row are unchanged and return when the theme is deactivated.
+A CSS import reads at most 1 MiB of UTF-8 text and 8,192 declarations and creates only
+an unsaved editor draft; it downloads nothing.
 The existing four-job extension queue bounds pending editor packages to at most
 16 MiB of image bytes in addition to their bounded metadata; one worker and one
 result slot remain. These are allocation ceilings, not measured process RSS.

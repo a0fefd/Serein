@@ -75,6 +75,7 @@ fn main() {
 		theme: None,
 		background_image: Vec::new(),
 		cover_image: Vec::new(),
+		font: Vec::new(),
 		wasm: module,
 	};
 	assert!(matches!(

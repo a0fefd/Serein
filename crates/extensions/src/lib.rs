@@ -23,11 +23,15 @@ mod app;
 pub use app::*;
 mod extended;
 pub use extended::*;
+mod css_theme;
+pub use css_theme::*;
 
 pub const API_VERSION: u32 = 1;
 pub const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MODULE_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BACKGROUND_BYTES: usize = 2 * 1024 * 1024;
+/// One embedded interface font per theme; real UI faces are well below this.
+pub const MAX_THEME_FONT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_PREVIEW_BYTES: usize = 256 * 1024;
 pub const MAX_CATALOG_BYTES: usize = 1024 * 1024;
 pub const MAX_IO_BYTES: usize = 256 * 1024;
@@ -330,6 +334,10 @@ pub struct Package {
 	pub background_image: Vec<u8>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub cover_image: Vec<u8>,
+	/// TTF/OTF bytes for the interface font while this theme is active. The desktop validates
+	/// the outlines before use; there are no font paths or URLs.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub font: Vec<u8>,
 	pub manifest: Manifest,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub theme: Option<Theme>,
@@ -1023,6 +1031,7 @@ impl Package {
 		self.manifest.validate()?;
 		if self.background_image.len() > MAX_BACKGROUND_BYTES
 			|| self.cover_image.len() > MAX_BACKGROUND_BYTES
+			|| self.font.len() > MAX_THEME_FONT_BYTES
 		{
 			return Err(Error::Limit);
 		}
@@ -1033,7 +1042,8 @@ impl Package {
 			ExtensionKind::Plugin
 				if self.theme.is_none()
 					&& self.background_image.is_empty()
-					&& self.cover_image.is_empty() =>
+					&& self.cover_image.is_empty()
+					&& self.font.is_empty() =>
 			{
 				if self.wasm.len() > MAX_MODULE_BYTES {
 					return Err(Error::Limit);

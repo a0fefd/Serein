@@ -1068,6 +1068,7 @@ fonts-show-none-installed = No installed fonts were found on this system.
 fonts-show-the-quick-brown-fox-jumps-over-the-lazy-dog-0123456789 = The quick brown fox jumps over the lazy dog. 0123456789
 # Context: show
 fonts-show-ttf-or-otf-up-to-32-mib-saved-on-this = Fonts installed on this device, up to 32 MiB. A copy is saved for Serein. Code keeps its monospace font.
+fonts-show-theme-font-active = The active theme includes its own font, which is shown instead of this choice until you switch themes.
 # Context: show
 fonts-show-typography = Typography
 
@@ -3706,6 +3707,11 @@ theme-editor-cover-card-custom-cover = Custom cover
 theme-editor-cover-card-png-or-jpeg-up-to-2-mib-this-image-does = PNG or JPEG, up to 2 MiB. This image does not change the chat background.
 # Context: cover_card
 theme-editor-cover-card-remove = Remove
+extensions-ui-css-import-unsaved-draft = Save or discard the theme you are editing before importing CSS.
+theme-editor-font-card-app-font = App font (not included)
+theme-editor-font-card-choose-font = Choose font file
+theme-editor-font-card-replace-font = Replace font
+theme-editor-font-card-hint = TTF or OTF, up to 8 MiB. The font is saved inside the theme and included in exports, so only share fonts whose license allows it.
 # Context: cover_card
 theme-editor-cover-card-replace-cover = Replace cover
 # Context: description
@@ -3769,6 +3775,8 @@ theme-editor-show-blend-two-colors-behind-the-app-s-surfaces = Blend two colors 
 theme-editor-show-blur = Blur
 # Context: show
 theme-editor-show-card-cover = Card cover
+theme-editor-show-interface-font = Interface font
+theme-editor-show-interface-font-description = Bundle a font that replaces the app font while this theme is active
 # Context: show
 theme-editor-show-choose-an-image-to-adjust-the-top-bar-lists-and = Choose an image to adjust the top bar, lists, and message area.
 # Context: show

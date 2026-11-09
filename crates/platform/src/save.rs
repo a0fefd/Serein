@@ -8,7 +8,10 @@ pub fn extension_source(
 	let dialog = rfd::AsyncFileDialog::new()
 		.set_parent(parent.as_ref())
 		.set_title("Import Serein extension")
-		.add_filter("Serein extensions", &["serein-extension", "json"])
+		.add_filter(
+			"Serein extensions and CSS themes",
+			&["serein-extension", "json", "css"],
+		)
 		.pick_file();
 	async move {
 		let file = dialog.await?;
@@ -40,6 +43,21 @@ pub fn theme_background_source(
 		.set_parent(parent.as_ref())
 		.set_title("Choose theme background")
 		.add_filter("Static images", &["png", "jpg", "jpeg"])
+		.pick_file();
+	async move {
+		let file = dialog.await?;
+		drop(parent);
+		Some(file.path().to_owned())
+	}
+}
+
+pub fn theme_font_source(
+	parent: Arc<winit::window::Window>,
+) -> impl std::future::Future<Output = Option<PathBuf>> + Send + 'static {
+	let dialog = rfd::AsyncFileDialog::new()
+		.set_parent(parent.as_ref())
+		.set_title("Choose theme font")
+		.add_filter("Fonts", &["ttf", "otf"])
 		.pick_file();
 	async move {
 		let file = dialog.await?;

@@ -106,7 +106,47 @@ painted elements, explicit text sizes, fixed-height rows and per-widget padding
 or radius overrides retain their own geometry. Shop thumbnails preview palette
 colors with omitted values from the built-in preset, not the currently selected
 theme or all control metrics. Themes cannot rearrange application panels,
-inject CSS/scripts, load fonts, fetch image URLs, or change message data.
+inject CSS/scripts, download fonts, fetch image URLs, or change message data.
+
+## Theme fonts
+
+A theme package may contain one `font` field: a JSON byte array holding a TTF or OTF
+file, at most 8 MiB, counted in the 16 MiB package limit. There are no font paths or
+URLs. While the theme is active, the font replaces the interface font, including the
+owner's own choice from Settings > Appearance; code keeps its monospace font, and the
+bundled CJK, Arabic, symbol and system fallbacks still cover missing glyphs. The
+owner's font returns when another theme or a built-in preset is selected. Fonts are
+validated (readable outlines, metrics and character map) before installation, export,
+save and use; an invalid font rejects the package. Older clients reject packages that
+contain this field.
+
+Create theme > Basics > Interface font chooses a local font file. Fonts embedded in an
+exported theme are redistributed with it, so check the font's license before sharing.
+
+## Importing CSS themes
+
+Settings > Themes > More > Import theme also accepts a `.css` file written for a web
+Discord client (Vencord, Vesktop or BetterDiscord). Serein draws its interface natively,
+so it cannot apply CSS rules. The import is a best-effort conversion of the theme's
+CSS custom properties into an unsaved draft that opens in the theme maker:
+
+| Source | Native result |
+| --- | --- |
+| `:root`, `.theme-dark` and `.theme-light` variables | Dark and light palettes (the first `.theme-*` class in a selector decides; darker/midnight variants are skipped) |
+| ClearVision settings (`--main-color`, `--success-color`, `--danger-color`, `--idle-color`, `--normal-text`, `--muted-text`, `--channel-selected-bg`) | Accent, link, positive, danger, warning, text, muted and selected colors |
+| Discord tokens (`--background-primary/secondary/tertiary`, `--background-floating`, `--background-modifier-*`, `--text-normal`, `--text-muted`, `--header-primary`, `--text-link`, `--brand-experiment`, `--status-*`) | Surface, text, link, accent and state colors |
+| `--background-shading` and `--card-shading` | Black or white surfaces whose section opacities match ClearVision's layered shading over one window image |
+| `--main-font`, `--font-primary` or `--font-display` | The first installed family is embedded as the theme font |
+| `--background-image` `url(https://…)` | Reported in the editor; not downloaded |
+| BetterDiscord `@name`, `@author`, `@version`, `@license` and HTTPS `@source` header | Package metadata (license defaults to `NOASSERTION`) |
+
+Colors may be hex (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`), `rgb()`/`rgba()` or
+`hsl()`/`hsla()` in comma or space syntax, directly or through `var()` with fallbacks.
+`calc()`, `color-mix()` and other functions are skipped. Selectors that style Discord's
+web DOM, `@import`ed stylesheets and remote fonts are counted and reported as skipped;
+nothing is fetched. The input is limited to 1 MiB of UTF-8 and 8,192 declarations,
+with bounded `var()` resolution. A file with no usable colors is rejected. Review the
+draft, choose the background image on the Background tab, then save.
 
 Run the offline validation/application example with:
 

@@ -86,6 +86,8 @@ pub enum Job {
 	},
 	InspectImport {
 		path: PathBuf,
+		/// Loads an installed font family named by an imported CSS theme.
+		find_font: FontLookup,
 	},
 	Enable {
 		source: Box<InstallSource>,
@@ -307,6 +309,8 @@ pub fn demo_check_examples() -> Result<bool, String> {
 #[derive(Clone)]
 pub struct InstalledExtension {
 	pub background_image: Option<Arc<eframe::egui::ColorImage>>,
+	/// The theme's validated font, decoded like the background only while it is active.
+	pub font: Option<ThemeFont>,
 	pub cover_image: Option<Arc<eframe::egui::ColorImage>>,
 	pub local_theme: bool,
 	pub active_theme: bool,
@@ -326,11 +330,13 @@ pub enum Event {
 	ThemeSelected {
 		id: Option<String>,
 		background_image: Option<Arc<eframe::egui::ColorImage>>,
+		font: Option<ThemeFont>,
 	},
 	EditTheme {
 		package: Box<Package>,
 		image: Option<Arc<eframe::egui::ColorImage>>,
 		cover: Option<Arc<eframe::egui::ColorImage>>,
+		font: Option<ThemeFont>,
 		local_theme: bool,
 		preview: bool,
 	},
@@ -349,6 +355,12 @@ pub enum Event {
 		manifest: Manifest,
 		source: InstallSource,
 		download_bytes: u64,
+	},
+	/// A Discord client CSS theme converted into an unsaved native draft.
+	ImportedCss {
+		package: Box<Package>,
+		font: Option<ThemeFont>,
+		notice: String,
 	},
 	Enabled(InstalledExtension),
 	Disabled(String),
@@ -551,8 +563,20 @@ impl Stored {
 				None
 			}
 		};
+		let font = if active {
+			match package_font(&self.package) {
+				Ok(font) => font,
+				Err(error) => {
+					result = Err(error);
+					None
+				}
+			}
+		} else {
+			None
+		};
 		InstalledExtension {
 			background_image,
+			font,
 			cover_image,
 			local_theme: self.local_theme,
 			active_theme: self.package.manifest.kind == ExtensionKind::Theme,
@@ -671,7 +695,7 @@ fn validate_job(job: &Job) -> Result<(), String> {
 		Job::Enable { grants, .. } if grants.len() > extensions::MAX_CAPABILITIES => {
 			return Err("Invalid plugin grants".into());
 		}
-		Job::InspectImport { path } if path.as_os_str().len() > 4096 => {
+		Job::InspectImport { path, .. } if path.as_os_str().len() > 4096 => {
 			return Err("Import path is too long".into());
 		}
 		_ => {}
@@ -714,6 +738,7 @@ fn run(root: &Path, job: Job, gate: &Gate) -> Result<Event, String> {
 			}
 			let image = package_background(&package)?;
 			let cover = package_cover(&package)?;
+			let font = package_font(&package)?;
 			gate.check()?;
 			Ok(Event::EditTheme {
 				local_theme,
@@ -721,11 +746,13 @@ fn run(root: &Path, job: Job, gate: &Gate) -> Result<Event, String> {
 				package: Box::new(package),
 				image,
 				cover,
+				font,
 			})
 		}
 		Job::SaveTheme { package } => {
 			let bytes = encode_theme(&package)?;
 			let _ = package_cover(&package)?;
+			let _ = package_font(&package)?;
 			let directory = root.join("themes").join(&package.manifest.id);
 			if directory.exists() && !read_stored(&directory.join("package.json"))?.local_theme {
 				return Err(
@@ -747,12 +774,14 @@ fn run(root: &Path, job: Job, gate: &Gate) -> Result<Event, String> {
 			// Reject invalid images before creating or replacing the user's export.
 			let _ = package_background(&package)?;
 			let _ = package_cover(&package)?;
+			let _ = package_font(&package)?;
 			export_theme(&path, &bytes, gate)?;
 			Ok(Event::ThemeExported)
 		}
 		Job::SelectTheme { id } => {
 			let parent = root.join("themes");
 			let mut background_image = None;
+			let mut font = None;
 			if let Some(id) = &id {
 				valid_id(id)?;
 				let stored = read_stored(&parent.join(id).join("package.json"))?;
@@ -763,6 +792,7 @@ fn run(root: &Path, job: Job, gate: &Gate) -> Result<Event, String> {
 					return Err("Theme is not installed".into());
 				}
 				background_image = package_background(&stored.package)?;
+				font = package_font(&stored.package)?;
 				atomic_write(&parent.join("active.json"), id.as_bytes(), gate)?;
 			} else {
 				remove_file(&parent.join("active.json"))?;
@@ -770,6 +800,7 @@ fn run(root: &Path, job: Job, gate: &Gate) -> Result<Event, String> {
 			Ok(Event::ThemeSelected {
 				id,
 				background_image,
+				font,
 			})
 		}
 		Job::Load { account } => Ok(Event::Loaded {
@@ -787,7 +818,14 @@ fn run(root: &Path, job: Job, gate: &Gate) -> Result<Event, String> {
 			let image = load_preview(&preview, gate);
 			Ok(Event::Preview { id, image })
 		}
-		Job::InspectImport { path } => {
+		Job::InspectImport { path, find_font }
+			if path
+				.extension()
+				.is_some_and(|extension| extension.eq_ignore_ascii_case("css")) =>
+		{
+			import_css(&path, find_font, gate)
+		}
+		Job::InspectImport { path, .. } => {
 			let bytes = read_bounded(&path, MAX_PACKAGE)?;
 			let package = extensions::parse_package(&bytes).map_err(|e| e.to_string())?;
 			let manifest = package.manifest;
@@ -1008,6 +1046,7 @@ fn install_stored(
 	summary.active_theme = stored.package.manifest.kind == ExtensionKind::Theme && activate;
 	if !activate {
 		summary.background_image = None;
+		summary.font = None;
 	}
 	if let Some(error) = &summary.error {
 		return Err(error.clone());
@@ -1175,6 +1214,7 @@ fn load(
 					},
 					Err(error) => InstalledExtension {
 						background_image: None,
+						font: None,
 						cover_image: None,
 						local_theme: false,
 						active_theme: false,
@@ -1512,6 +1552,94 @@ fn package_background(package: &Package) -> Result<Option<Arc<eframe::egui::Colo
 	}
 }
 
+/// A theme font shared between the installed list, previews and the renderer without copying.
+pub type ThemeFont = Arc<ui::fonts::CustomFont>;
+pub type FontLookup = fn(String) -> Result<ui::fonts::CustomFont, &'static str>;
+
+fn decode_font(name: String, bytes: Vec<u8>) -> Result<ThemeFont, String> {
+	if bytes.len() > extensions::MAX_THEME_FONT_BYTES {
+		return Err("Theme fonts are limited to 8 MiB".into());
+	}
+	let name = ui::fonts::family_name(&bytes).unwrap_or(name);
+	ui::fonts::CustomFont::new(name, bytes)
+		.map(Arc::new)
+		.map_err(str::to_owned)
+}
+
+fn package_font(package: &Package) -> Result<Option<ThemeFont>, String> {
+	if package.font.is_empty() {
+		return Ok(None);
+	}
+	decode_font(
+		format!("{} font", package.manifest.name),
+		package.font.clone(),
+	)
+	.map(Some)
+}
+
+/// One TTF/OTF chosen in the theme editor, validated off the UI thread.
+pub fn read_theme_font(path: &Path) -> Result<(Vec<u8>, ThemeFont), String> {
+	let bytes = read_bounded(path, extensions::MAX_THEME_FONT_BYTES)?;
+	let stem = path.file_stem().map_or_else(
+		|| "Theme font".into(),
+		|stem| stem.to_string_lossy().into_owned(),
+	);
+	let font = decode_font(stem, bytes.clone())?;
+	Ok((bytes, font))
+}
+
+/// Convert a Discord client CSS theme. Installed fonts it names are embedded; remote images and
+/// fonts are reported to the owner instead of downloaded.
+fn import_css(path: &Path, find_font: FontLookup, gate: &Gate) -> Result<Event, String> {
+	let bytes = read_bounded(path, extensions::MAX_CSS_BYTES)?;
+	let css = String::from_utf8(bytes).map_err(|_| "This CSS file is not UTF-8 text")?;
+	let mut import = extensions::import_css(&css, "imported-css-theme".into()).map_err(|_| {
+		"This CSS has no theme colors Serein can use. Only CSS variables such as --main-color or --background-primary are imported."
+	})?;
+	gate.check()?;
+	let mut font = None;
+	for family in &import.fonts {
+		if let Ok(found) = find_font(family.clone())
+			&& found.bytes().len() <= extensions::MAX_THEME_FONT_BYTES
+		{
+			import.package.font = found.bytes().to_vec();
+			font = Some(Arc::new(found));
+			break;
+		}
+	}
+	gate.check()?;
+	let mut notice = format!(
+		"Imported {} settings from {}. Review them, then save.",
+		import.mapped, import.package.manifest.name
+	);
+	match (&font, import.fonts.first()) {
+		(Some(font), _) => notice.push_str(&format!(
+			" The installed font {} is included; check its license before sharing an export.",
+			font.name
+		)),
+		(None, Some(family)) => notice.push_str(&format!(
+			" The font {family} is not installed, so the app font is used."
+		)),
+		(None, None) => {}
+	}
+	if let Some(url) = &import.background_url {
+		notice.push_str(&format!(
+			" Serein does not download theme files: save the background from {url} and choose it on the Background tab."
+		));
+	}
+	if import.ignored > 0 {
+		notice.push_str(&format!(
+			" {} layout rules and imported stylesheets only apply to Discord's web interface and were skipped.",
+			import.ignored
+		));
+	}
+	Ok(Event::ImportedCss {
+		package: Box::new(import.package),
+		font,
+		notice,
+	})
+}
+
 fn decode_static_image(bytes: &[u8], max_pixels: u64) -> Option<image::DynamicImage> {
 	use image::ImageDecoder;
 	let format = image::guess_format(bytes).ok()?;
@@ -1738,6 +1866,7 @@ mod tests {
 			theme: Some(Theme::default()),
 			background_image: Vec::new(),
 			cover_image: Vec::new(),
+			font: Vec::new(),
 			wasm: Vec::new(),
 		}
 	}

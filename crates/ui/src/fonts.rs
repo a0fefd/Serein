@@ -48,6 +48,21 @@ impl CustomFont {
 	}
 }
 
+/// The font's own family name, for labelling a theme font. `None` when the name table lacks
+/// a usable entry.
+pub fn family_name(bytes: &[u8]) -> Option<String> {
+	use skrifa::{MetadataProvider, string::StringId};
+	let font = skrifa::FontRef::new(bytes).ok()?;
+	let name: String = [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME]
+		.into_iter()
+		.find_map(|id| font.localized_strings(id).english_or_first())?
+		.chars()
+		.take(128)
+		.collect();
+	let name = name.trim();
+	(!name.is_empty() && !name.chars().any(char::is_control)).then(|| name.to_owned())
+}
+
 /// One face as a standalone font file. A collection (`.ttc`) member is copied out with its own
 /// table directory, so the saved copy restores without a face index.
 pub fn standalone_face(data: &[u8], index: u32) -> Result<Vec<u8>, &'static str> {
@@ -143,6 +158,9 @@ impl Settings {
 				ui,
 				&crate::i18n::translate("fonts-show-ttf-or-otf-up-to-32-mib-saved-on-this"),
 			);
+			if theme_font_active(ui.ctx()) {
+				design::hint(ui, &crate::i18n::translate("fonts-show-theme-font-active"));
+			}
 			ui.label(crate::i18n::translate(
 				"fonts-show-the-quick-brown-fox-jumps-over-the-lazy-dog-0123456789",
 			));
@@ -358,7 +376,52 @@ pub fn revision(ctx: &Context) -> (usize, usize, u32) {
 	})
 }
 
+/// The owner's interface font and the active theme's font. A theme font wins while its theme
+/// is active; the owner's choice returns when the theme is deactivated.
+#[derive(Clone, Default)]
+struct Slots {
+	user: Option<CustomFont>,
+	theme: Option<Arc<CustomFont>>,
+}
+
+fn slots(ctx: &Context) -> Arc<Mutex<Slots>> {
+	ctx.data_mut(|data| {
+		data.get_temp_mut_or_default::<Arc<Mutex<Slots>>>(egui::Id::unique("serein-font-slots"))
+			.clone()
+	})
+}
+
+/// Set the owner's interface font. It is shown unless an active theme supplies one.
 pub fn apply_custom(ctx: &Context, font: Option<&CustomFont>) {
+	let slots = slots(ctx);
+	let mut slots = slots.lock().expect("font slots");
+	slots.user = font.cloned();
+	install_custom(ctx, slots.theme.as_deref().or(slots.user.as_ref()));
+}
+
+/// Set the active theme's font. Repeating the current font does no work, so theme updates
+/// can call this on every application.
+pub fn apply_theme_font(ctx: &Context, font: Option<Arc<CustomFont>>) {
+	let slots = slots(ctx);
+	let mut slots = slots.lock().expect("font slots");
+	let unchanged = match (&slots.theme, &font) {
+		(Some(old), Some(new)) => Arc::ptr_eq(old, new),
+		(None, None) => true,
+		_ => false,
+	};
+	if unchanged {
+		return;
+	}
+	slots.theme = font;
+	install_custom(ctx, slots.theme.as_deref().or(slots.user.as_ref()));
+}
+
+/// Whether the active theme currently overrides the owner's interface font.
+pub fn theme_font_active(ctx: &Context) -> bool {
+	slots(ctx).lock().expect("font slots").theme.is_some()
+}
+
+fn install_custom(ctx: &Context, font: Option<&CustomFont>) {
 	let shared = ctx.data(|data| {
 		data.get_temp::<Arc<Mutex<FontDefinitions>>>(egui::Id::unique(DEFINITIONS_KEY))
 	});
@@ -801,6 +864,43 @@ mod tests {
 			scan.text(&job),
 			"cache rollover must not suppress new CJK text"
 		);
+	}
+
+	#[test]
+	fn theme_font_overrides_the_owner_font_until_the_theme_is_deactivated() {
+		let ctx = Context::default();
+		install(&ctx);
+		let custom = || {
+			ctx.fonts(|fonts| {
+				fonts
+					.definitions()
+					.font_data
+					.get(CUSTOM[0])
+					.map(|data| data.bytes().len())
+			})
+		};
+		let frame = || {
+			ctx.run_ui(egui::RawInput::default(), |_| {})
+				.drop_without_applying_deltas()
+		};
+		let owner = CustomFont::new("Owner".into(), INTER_SEMIBOLD.to_vec()).unwrap();
+		let theme = Arc::new(CustomFont::new("Theme".into(), INTER_MEDIUM.to_vec()).unwrap());
+		apply_custom(&ctx, Some(&owner));
+		frame();
+		assert_eq!(custom(), Some(INTER_SEMIBOLD.len()));
+		apply_theme_font(&ctx, Some(theme.clone()));
+		frame();
+		assert_eq!(custom(), Some(INTER_MEDIUM.len()));
+		assert!(theme_font_active(&ctx));
+		// Changing the owner's font while a theme font is active keeps the theme font.
+		apply_custom(&ctx, None);
+		frame();
+		assert_eq!(custom(), Some(INTER_MEDIUM.len()));
+		apply_custom(&ctx, Some(&owner));
+		apply_theme_font(&ctx, None);
+		frame();
+		assert_eq!(custom(), Some(INTER_SEMIBOLD.len()));
+		assert!(!theme_font_active(&ctx));
 	}
 
 	#[test]

@@ -80,6 +80,7 @@ pub enum ExtensionRequest {
 	},
 	PickThemeImage,
 	PickThemeCover,
+	PickThemeFont,
 	SaveTheme {
 		package: Box<extensions::Package>,
 	},
@@ -89,6 +90,7 @@ pub enum ExtensionRequest {
 	PreviewTheme {
 		theme: Option<Box<extensions::Theme>>,
 		image: Option<Arc<egui::ColorImage>>,
+		font: Option<Arc<crate::fonts::CustomFont>>,
 	},
 	SelectTheme {
 		id: Option<String>,
@@ -294,6 +296,7 @@ impl ExtensionUi {
 		package: Box<extensions::Package>,
 		image: Option<Arc<egui::ColorImage>>,
 		cover: Option<Arc<egui::ColorImage>>,
+		font: Option<Arc<crate::fonts::CustomFont>>,
 		local_theme: bool,
 		preview: bool,
 	) {
@@ -305,10 +308,51 @@ impl ExtensionUi {
 			// Gallery notices such as a finished removal do not belong in the editor.
 			self.status.clear();
 			self.theme_editor = Some(if local_theme {
-				crate::theme_editor::ThemeEditor::edit(package, image, cover)
+				crate::theme_editor::ThemeEditor::edit(package, image, cover, font)
 			} else {
-				crate::theme_editor::ThemeEditor::duplicate(package, image, cover)
+				crate::theme_editor::ThemeEditor::duplicate(package, image, cover, font)
 			});
+		}
+	}
+	/// Open a theme converted from another client's CSS as an unsaved draft in the editor.
+	pub fn receive_imported_theme(
+		&mut self,
+		package: Box<extensions::Package>,
+		font: Option<Arc<crate::fonts::CustomFont>>,
+		notice: String,
+	) {
+		if package.manifest.kind != ExtensionKind::Theme || package.theme.is_none() {
+			return;
+		}
+		if self
+			.theme_editor
+			.as_ref()
+			.is_some_and(|editor| editor.dirty)
+		{
+			self.status = crate::i18n::translate("extensions-ui-css-import-unsaved-draft");
+			return;
+		}
+		self.themes = true;
+		self.gallery_preview = None;
+		self.status.clear();
+		self.theme_editor = Some(crate::theme_editor::ThemeEditor::imported(
+			package, font, notice,
+		));
+	}
+	pub fn receive_theme_font(&mut self, bytes: Vec<u8>, font: Arc<crate::fonts::CustomFont>) {
+		if bytes.len() > extensions::MAX_THEME_FONT_BYTES {
+			return;
+		}
+		if let Some(editor) = &mut self.theme_editor {
+			editor.receive_font(bytes, font);
+			if editor.preview {
+				self.requests
+					.retain(|request| !matches!(request, ExtensionRequest::PreviewTheme { .. }));
+				let request = editor.preview_request();
+				if self.requests.len() < 4 {
+					self.requests.push(request);
+				}
+			}
 		}
 	}
 	#[cfg(feature = "demo")]
@@ -380,6 +424,7 @@ impl ExtensionUi {
 				ExtensionRequest::PreviewTheme {
 					theme: None,
 					image: None,
+					font: None,
 				},
 			);
 		}
@@ -544,6 +589,7 @@ impl ExtensionUi {
 					ExtensionRequest::PreviewTheme {
 						theme: None,
 						image: None,
+						font: None,
 					},
 				);
 			}
@@ -2546,14 +2592,16 @@ fn request_bytes(request: &ExtensionRequest) -> usize {
 		+ match request {
 			ExtensionRequest::PickThemeImage => 0,
 			ExtensionRequest::PickThemeCover => 0,
+			ExtensionRequest::PickThemeFont => 0,
 			ExtensionRequest::EditTheme { id, .. } => id.len(),
 			ExtensionRequest::SaveTheme { package } | ExtensionRequest::ExportTheme { package } => {
 				package.background_image.len()
 					+ package.cover_image.len()
+					+ package.font.len()
 					+ package.wasm.len()
 					+ 16384
 			}
-			ExtensionRequest::PreviewTheme { theme, image } => {
+			ExtensionRequest::PreviewTheme { theme, image, .. } => {
 				usize::from(theme.is_some()) * 16384
 					+ image.as_ref().map_or(0, |image| image.pixels.len() * 4)
 			}

@@ -64,7 +64,7 @@ pub fn load(
 	receive
 }
 
-fn read_family(name: String) -> Result<CustomFont, &'static str> {
+pub(crate) fn read_family(name: String) -> Result<CustomFont, &'static str> {
 	let mut collection = collection();
 	let family = collection
 		.family_by_name(&name)

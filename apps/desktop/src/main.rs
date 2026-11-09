@@ -2370,7 +2370,20 @@ impl Desktop {
 		Ok(Self {
 			proxy_auth: proxy_auth::Authentication::default(),
 			api_proxy: tokio::sync::watch::channel(None).0,
-			extensions: extension_bridge::Bridge::default(),
+			extensions: {
+				#[allow(unused_mut)]
+				let mut bridge = extension_bridge::Bridge::default();
+				// `--demo-import-css=PATH` imports a local CSS theme as if picked, for screenshots.
+				#[cfg(feature = "demo")]
+				if demo
+					&& let Some(path) = std::env::args().find_map(|arg| {
+						arg.strip_prefix("--demo-import-css=")
+							.map(std::path::PathBuf::from)
+					}) {
+					bridge.demo_import(path);
+				}
+				bridge
+			},
 			extension_close_pending: false,
 			login: None,
 			captcha: captcha::Captcha::default(),

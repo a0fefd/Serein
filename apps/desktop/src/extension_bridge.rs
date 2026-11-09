@@ -166,8 +166,15 @@ type PickedBackground = (Vec<u8>, Arc<egui::ColorImage>);
 enum ThemePickerResult {
 	Image(Result<Option<PickedBackground>, String>),
 	Cover(Result<Option<PickedBackground>, String>),
+	Font(Result<Option<(Vec<u8>, crate::extensions::ThemeFont)>, String>),
 	Export(Option<PathBuf>, Box<extensions::Package>),
 }
+/// The editor's or gallery's unsaved appearance: theme, background and font.
+type ThemePreview = (
+	Box<extensions::Theme>,
+	Option<Arc<egui::ColorImage>>,
+	Option<crate::extensions::ThemeFont>,
+);
 #[derive(Default)]
 pub struct Bridge {
 	rich_presence_changed: bool,
@@ -185,7 +192,7 @@ pub struct Bridge {
 	imported: Option<InstallSource>,
 	picker: Option<mpsc::Receiver<Option<PathBuf>>>,
 	theme_picker: Option<mpsc::Receiver<ThemePickerResult>>,
-	theme_preview: Option<(Box<extensions::Theme>, Option<Arc<egui::ColorImage>>)>,
+	theme_preview: Option<ThemePreview>,
 	message_events: VecDeque<QueuedEvent>,
 	message_event_at: Option<Instant>,
 	message_events_dropped: bool,
@@ -531,6 +538,13 @@ impl Bridge {
 		}
 		Ok(())
 	}
+	/// Fixture-only: treat `path` as the file chosen in the import dialog.
+	#[cfg(feature = "demo")]
+	pub fn demo_import(&mut self, path: PathBuf) {
+		let (send, receive) = mpsc::sync_channel(1);
+		let _ = send.send(Some(path));
+		self.picker = Some(receive);
+	}
 	pub fn tick(
 		&mut self,
 		state: &mut State,
@@ -770,14 +784,15 @@ impl Bridge {
 				Ok(Event::ThemeSelected {
 					id,
 					background_image,
+					font,
 				}) => {
 					self.theme_preview = None;
 					for entry in &mut self.installed {
 						entry.active_theme = id.as_deref() == Some(entry.manifest.id.as_str());
-						entry.background_image = if entry.active_theme {
-							background_image.clone()
+						(entry.background_image, entry.font) = if entry.active_theme {
+							(background_image.clone(), font.clone())
 						} else {
-							None
+							(None, None)
 						};
 					}
 					self.apply_theme(ctx);
@@ -799,6 +814,7 @@ impl Bridge {
 						for old in &mut self.installed {
 							old.active_theme = false;
 							old.background_image = None;
+							old.font = None;
 						}
 					}
 					self.installed
@@ -925,15 +941,24 @@ impl Bridge {
 					package,
 					image,
 					cover,
+					font,
 					local_theme,
 					preview,
 				}) => messaging.extensions.receive_theme_edit(
 					package,
 					image,
 					cover,
+					font,
 					local_theme,
 					preview,
 				),
+				Ok(Event::ImportedCss {
+					package,
+					font,
+					notice,
+				}) => messaging
+					.extensions
+					.receive_imported_theme(package, font, notice),
 				Ok(Event::ThemeExported) => messaging.extensions.status = "Theme exported.".into(),
 				Ok(Event::LoggedOut | Event::Preview { .. }) => {}
 			}
@@ -944,7 +969,10 @@ impl Bridge {
 					self.picker = None;
 					if let Some(path) = path {
 						self.submit(
-							Job::InspectImport { path },
+							Job::InspectImport {
+								path,
+								find_font: crate::font_import::read_family,
+							},
 							None,
 							state.generation,
 							ctx,
@@ -970,9 +998,11 @@ impl Bridge {
 						ThemePickerResult::Cover(Ok(Some((bytes, image)))) => {
 							messaging.extensions.receive_theme_cover(bytes, image)
 						}
-						ThemePickerResult::Image(Err(error)) => {
-							messaging.extensions.report_error(error)
+						ThemePickerResult::Font(Ok(Some((bytes, font)))) => {
+							messaging.extensions.receive_theme_font(bytes, font)
 						}
+						ThemePickerResult::Image(Err(error))
+						| ThemePickerResult::Font(Err(error)) => messaging.extensions.report_error(error),
 						ThemePickerResult::Cover(Err(error)) => {
 							messaging.extensions.report_error(error)
 						}
@@ -1008,8 +1038,8 @@ impl Bridge {
 				self.pending.clear();
 			}
 			match request {
-				ExtensionRequest::PreviewTheme { theme, image } => {
-					self.theme_preview = theme.map(|theme| (theme, image));
+				ExtensionRequest::PreviewTheme { theme, image, font } => {
+					self.theme_preview = theme.map(|theme| (theme, image, font));
 					self.apply_theme(ctx);
 				}
 				ExtensionRequest::EditTheme { id, preview } => self.submit(
@@ -1066,6 +1096,25 @@ impl Bridge {
 					});
 					self.theme_picker = Some(receive);
 				}
+				ExtensionRequest::PickThemeFont if self.theme_picker.is_none() => {
+					let (send, receive) = mpsc::sync_channel(1);
+					let future = platform::save::theme_font_source(window.clone());
+					let ctx = ctx.clone();
+					runtime.spawn(async move {
+						let result = if let Some(path) = future.await {
+							tokio::task::spawn_blocking(move || {
+								crate::extensions::read_theme_font(&path).map(Some)
+							})
+							.await
+							.unwrap_or_else(|_| Err("Font worker failed.".into()))
+						} else {
+							Ok(None)
+						};
+						let _ = send.send(ThemePickerResult::Font(result));
+						ctx.request_repaint();
+					});
+					self.theme_picker = Some(receive);
+				}
 				ExtensionRequest::ExportTheme { package } if self.theme_picker.is_none() => {
 					let (send, receive) = mpsc::sync_channel(1);
 					let future = platform::save::theme_destination(
@@ -1081,6 +1130,7 @@ impl Bridge {
 				}
 				ExtensionRequest::PickThemeImage
 				| ExtensionRequest::PickThemeCover
+				| ExtensionRequest::PickThemeFont
 				| ExtensionRequest::ExportTheme { .. } => {}
 				ExtensionRequest::SelectTheme { id } => {
 					self.submit(
@@ -1732,7 +1782,7 @@ impl Bridge {
 		let mut appearance = self
 			.theme_preview
 			.as_ref()
-			.map_or_else(extensions::Theme::default, |(theme, _)| (**theme).clone());
+			.map_or_else(extensions::Theme::default, |(theme, ..)| (**theme).clone());
 		for entry in &entries {
 			let blended = self.blended_theme(&entry.manifest.id);
 			appearance.overlay(
@@ -1753,7 +1803,19 @@ impl Bridge {
 						.find(|entry| entry.active_theme)
 						.and_then(|entry| entry.background_image.clone())
 				},
-				|(_, image)| image.clone(),
+				|(_, image, _)| image.clone(),
+			),
+		);
+		ui::fonts::apply_theme_font(
+			ctx,
+			self.theme_preview.as_ref().map_or_else(
+				|| {
+					entries
+						.iter()
+						.find(|entry| entry.active_theme)
+						.and_then(|entry| entry.font.clone())
+				},
+				|(_, _, font)| font.clone(),
 			),
 		);
 		ui::design::apply(ctx);
@@ -1811,6 +1873,7 @@ mod tests {
 		.unwrap();
 		let installed = InstalledExtension {
 			background_image: None,
+			font: None,
 			cover_image: None,
 			local_theme: false,
 			active_theme: false,
