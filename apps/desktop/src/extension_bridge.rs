@@ -971,7 +971,7 @@ impl Bridge {
 						self.submit(
 							Job::InspectImport {
 								path,
-								find_font: crate::font_import::read_family,
+								find_font: crate::font_import::read_css_family,
 							},
 							None,
 							state.generation,

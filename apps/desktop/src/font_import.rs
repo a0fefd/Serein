@@ -64,14 +64,22 @@ pub fn load(
 	receive
 }
 
-pub(crate) fn read_family(name: String) -> Result<CustomFont, &'static str> {
+fn read_family(name: String) -> Result<CustomFont, &'static str> {
 	let mut collection = collection();
 	let family = collection
 		.family_by_name(&name)
 		.ok_or("This font is no longer installed.")?;
-	let font = family
-		.fonts()
-		.iter()
+	let font = regular(family.fonts().iter())
+		.or_else(|| family.default_font())
+		.ok_or("This font has no usable style.")?;
+	load_face(name, font)
+}
+
+/// The upright face closest to normal width, then regular weight.
+fn regular<'a>(
+	fonts: impl Iterator<Item = &'a fontique::FontInfo>,
+) -> Option<&'a fontique::FontInfo> {
+	fonts
 		.filter(|font| font.style() == fontique::FontStyle::Normal)
 		.min_by_key(|font| {
 			(
@@ -79,11 +87,38 @@ pub(crate) fn read_family(name: String) -> Result<CustomFont, &'static str> {
 				(font.weight().value() - 400.0).abs().to_bits(),
 			)
 		})
-		.or_else(|| family.default_font())
-		.ok_or("This font has no usable style.")?;
+}
+
+fn load_face(name: String, font: &fontique::FontInfo) -> Result<CustomFont, &'static str> {
 	let blob = font.load(None).ok_or("Could not read the font.")?;
 	let bytes = ui::fonts::standalone_face(blob.as_ref(), font.index())?;
 	CustomFont::new(name, bytes)
+}
+
+/// Load the regular face of a family named by an imported CSS theme. Some installs register
+/// each weight as its own family ("Name Normal", "Name Medium", with plain "Name" holding only
+/// Bold), so sibling families that extend the name are searched for the regular weight too.
+pub(crate) fn read_css_family(name: String) -> Result<CustomFont, &'static str> {
+	let mut collection = collection();
+	let prefix = format!("{} ", name.to_lowercase());
+	let families: Vec<String> = collection
+		.family_names()
+		.filter(|family| {
+			let family = family.to_lowercase();
+			family == name.to_lowercase() || family.starts_with(&prefix)
+		})
+		.take(64)
+		.map(str::to_owned)
+		.collect();
+	let faces: Vec<_> = families
+		.iter()
+		.filter_map(|family| collection.family_by_name(family))
+		.flat_map(|family| family.fonts().to_vec())
+		.collect();
+	let font = regular(faces.iter())
+		.or_else(|| faces.first())
+		.ok_or("This font is not installed.")?;
+	load_face(name, font)
 }
 
 #[cfg(all(debug_assertions, feature = "demo"))]
